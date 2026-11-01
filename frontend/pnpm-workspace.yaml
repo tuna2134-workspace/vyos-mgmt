@@ -1,0 +1,5 @@
+packages: []
+
+# Keep native/build scripts explicit and local to the frontend workspace.
+allowBuilds:
+  sharp: true

@@ -1,0 +1,61 @@
+name: vyos-mgmt
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vyos_mgmt}
+      POSTGRES_USER: ${POSTGRES_USER:-vyos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vyos} -d ${POSTGRES_DB:-vyos_mgmt}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published by default; the app talks to it over the compose network.
+    expose:
+      - "5432"
+
+  app:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api/v1}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Keep "development" for plain-HTTP self-hosting. Set to "production"
+      # (with COOKIE_SECURE=true and ENVIRONMENT=production) behind TLS.
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-vyos}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-vyos_mgmt}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env (32+ random characters)}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      TRUSTED_PROXY_HEADERS: ${TRUSTED_PROXY_HEADERS:-false}
+      SERVE_FRONTEND: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      VYOS_TIMEOUT_SECONDS: ${VYOS_TIMEOUT_SECONDS:-10}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  db-data:

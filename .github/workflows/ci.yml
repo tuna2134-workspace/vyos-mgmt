@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vyos
+          POSTGRES_PASSWORD: vyos
+          POSTGRES_DB: vyos_mgmt_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vyos -d vyos_mgmt_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://vyos:vyos@localhost:5432/vyos_mgmt_test
+      SECRET_KEY: ci-only-secret-key-0123456789abcdef0123456789abcdef
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+      - name: Lint
+        run: |
+          uv run ruff check src tests alembic
+          uv run ruff format --check src tests alembic
+      - name: Apply migrations to a fresh database
+        run: |
+          DATABASE_URL=postgresql+asyncpg://vyos:vyos@localhost:5432/vyos_mgmt_test \
+            uv run alembic upgrade head
+          DATABASE_URL=postgresql+asyncpg://vyos:vyos@localhost:5432/vyos_mgmt_test \
+            uv run alembic check
+      - name: Tests
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (typecheck + static build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      # `next build` generates next-env.d.ts (gitignored) and also validates
+      # types. Run it before the explicit typecheck so a clean checkout works.
+      - name: Static build
+        working-directory: frontend
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_PUBLIC_API_BASE_URL: /api/v1
+        run: pnpm build
+      - name: Typecheck
+        working-directory: frontend
+        run: pnpm typecheck
+      - name: Verify static export
+        run: |
+          test -f frontend/out/index.html
+          test -f frontend/out/login/index.html
+          test -f frontend/out/bgp/index.html
+          test -f frontend/out/route-maps/index.html
+          test -f frontend/out/prefix-lists/index.html
+          test -f frontend/out/ospf/index.html
+          test -f frontend/out/static-routes/index.html
+          test -f frontend/out/vpn/index.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-out
+          path: frontend/out
+          retention-days: 7
